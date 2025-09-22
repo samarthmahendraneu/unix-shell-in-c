@@ -1,0 +1,13 @@
+Name:
+NUID:
+slack hours used: 0
+remaining slack hours: 120
+Challenge (optional): No
+
+Collaborators (who you talked to about the lab, what you talked about):
+
+
+Source material that you consulted:
+
+
+Other acknowledgments:
