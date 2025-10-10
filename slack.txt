@@ -1,5 +1,5 @@
-Name:
-NUID:
+Name: Marasanige Samarth Mahendra
+NUID: 002812936
 slack hours used: 0
 remaining slack hours: 120
 Challenge (optional): No

@@ -100,115 +100,152 @@
 static pid_t
 cmd_exec(command_t *cmd, int *pass_pipefd)
 {
-        (void)pass_pipefd;      // get rid of unused warning
-	pid_t pid = -1;		// process ID for child
-	int pipefd[2];		// file descriptors for this process's pipe
+    pid_t pid = -1;
+    int pipefd[2];
 
-	/* EXERCISE 4: Complete this function!
-	 * We've written some of the skeleton for you, but feel free to
-	 * change it.
-	 */
+    // 1️⃣ Create a pipe if this command is the left-hand side of a pipe
+    if (cmd->controlop == CMD_PIPE) {
+        if (pipe(pipefd) < 0) {
+            perror("pipe");
+            return -1;
+        }
+    } else {
+        pipefd[0] = pipefd[1] = -1;
+    }
 
-	// Create a pipe, if this command is the left-hand side of a pipe.
-	// Return -1 if the pipe fails.
-	if (cmd->controlop == CMD_PIPE) {
-		/* Your code here*/
-	}
+    // 2️⃣ Fork the child
+    pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
 
+    if (pid == 0) {
+        // ---------- CHILD ----------
 
-	// Fork the child and execute the command in that child.
-	// You will handle all redirections by manipulating file descriptors.
-	//
-	// This section is fairly long.  It is probably best to implement this
-	// part in stages, checking it after each step.  For example:
-        //
-	//   --First implement just the fork and the execute in the
-	//   child (as we saw in class).  This should allow you to
-	//   execute simple commands like 'ls'. Some of the tests in
-	//   "make test" ought to pass.
-	//   --Next, add support for redirections: as a simple test,
-	//   'ls > foo' followed by 'cat < foo' should display the
-	//   directory listing. A few more of the tests in "make test"
-	//   should pass.
-	//   --Next, support parentheses (a few more tests should pass,
-	//     etc.)
-	//   --Then pipes (if you use our pseudocode from class as
-	//   inspiration, NOTE that the logic is a bit different in this lab)
-	//   --And finally the internal commands 'cd', 'exit', and
-	//   'our_pwd'.
-	//
-	//  Throughout, you will be using system calls: fork(), dup2(),
-	//  close(), open(), execvp() or execve(), exit(), chdir(), etc.
-	//
-	//  You can also use perror() to handle error conditions
-	//  concisely (type "$ man 3 perror" in a Unix terminal to get
-	//  documentation).
-	//
-	//  You will need to do real C programming here.
-	//  Tools like gdb (the debugger) may be useful.
-	//
-	//  You will also find functions like strcmp() and strtol()
-	//  useful. Type "man strcmp", etc. for more information.
-	//
-	// In the child, you should:
-	//    1. Set up stdout to point to this command's pipe, if necessary;
-	//       close some file descriptors, if necessary (which ones?)
-	//    2. Set up stdin to point to the PREVIOUS command's pipe (that
-	//       is, *pass_pipefd), if appropriate; close a file
-	//       descriptor (which one?)
-	//    3. Set up redirections. Use the open() system call.
-	//       Hints:
-	//          --For input redirections, the oflag should be O_RDONLY.
-	//          --For output redirections (stdout and stderr), what
-	//          oflags do you want?
-	//          --Set the mode argument of open() to be 0666
-	//    4. Execute the command.
-	//       There are some special cases:
-	//       a. Parentheses.  Execute cmd->subshell. How? Also,
-	//          you won't be invoking exec() in this special case,
-	//          so think carefully about how this path "ends". (What
-	//          would happen if we were to return from the current
-	//          function?)
-	//       b. A null command (no subshell, no arguments).
-	//          Exit with status 0.
-	//       c. "exit".
-	//       d. "cd".
-	//       e. "our_pwd".
-	//       f. Remember to make your implementation
-	//       consistent with the specification above!
-	//
-	// In the parent, you should:
-	//    1. Close some file descriptors.  Hint: Consider the write end
-	//       of this command's pipe, and one other fd as well.
-	//    2. Handle the special "exit", "cd", and "our_pwd" commands.
-	//    3. Set *pass_pipefd as appropriate.
-	//
-	// "cd","exit","our_pwd" Hints:
-	//    Recall from the comments earlier that you need to return a status,
-	//    and do redirections. How can you do these things for a
-	//    command executed in the parent shell?
-	//    Answer: It's easest if you fork a child ANYWAY!
-        //    You should divide functionality between the parent and the child.
-        //    Some functions will be executed in each process. For example,
-        //         --in the case of "exit", both parent and child
-        //         need to exit, but only the parent's exit code "matters",
-        //         --in the case of "cd", both parent and child should
-        //         try to change directory (use chdir()), but only the child
-        //         should print error messages
-        //         --in the case of "our_pwd", see "man getcwd"
-	//
-	//    For the "cd" command, you should change directories AFTER
-	//    the fork(), not before it.  Why?
-	//    Design some tests with 'bash' that will tell you the answer.
-	//    For example, try "cd /tmp ; cd $HOME > foo".  In which directory
-	//    does foo appear, /tmp or $HOME?  If you chdir() BEFORE the fork,
-	//    in which directory would foo appear, /tmp or $HOME?
-	//
-	/* Your code here */
+        // If reading from previous pipe
+        if (*pass_pipefd != STDIN_FILENO) {
+            dup2(*pass_pipefd, STDIN_FILENO);
+            close(*pass_pipefd);
+        }
 
-	// return the child process ID
-	return pid;
+        // If writing to next pipe
+        if (cmd->controlop == CMD_PIPE) {
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[0]);
+            close(pipefd[1]);
+        }
+
+        // ---------- Redirections ----------
+        if (cmd->redirect_filename[STDIN_FILENO]) {
+            int fd = open(cmd->redirect_filename[STDIN_FILENO], O_RDONLY);
+            if (fd < 0) { perror("open"); exit(1); }
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+        }
+
+        if (cmd->redirect_filename[STDOUT_FILENO]) {
+            int fd = open(cmd->redirect_filename[STDOUT_FILENO],
+                          O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (fd < 0) { perror("open"); exit(1); }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        }
+
+        if (cmd->redirect_filename[STDERR_FILENO]) {
+            int fd = open(cmd->redirect_filename[STDERR_FILENO],
+                          O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (fd < 0) { perror("open"); exit(1); }
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+
+        // ---------- Subshell ----------
+        if (cmd->subshell) {
+            int status = cmd_line_exec(cmd->subshell);
+            exit(status == 0 ? 0 : 5);
+        }
+
+        // ---------- Null command ----------
+        if (!cmd->argv[0]) exit(0);
+
+        // ---------- Built-ins ----------
+        if (strcmp(cmd->argv[0], "cd") == 0) {
+            if (!cmd->argv[1] || cmd->argv[2]) {
+                fprintf(stderr, "cd: Syntax error! Wrong number of arguments!\n");
+                exit(1);
+            }
+            if (chdir(cmd->argv[1]) < 0) {
+                perror("cd");
+                exit(1);
+            }
+            exit(0);
+        }
+
+        if (strcmp(cmd->argv[0], "our_pwd") == 0) {
+            if (cmd->argv[1]) {
+                fprintf(stderr, "pwd: Syntax error! Wrong number of arguments!\n");
+                exit(1);
+            }
+            char cwd[1024];
+            if (getcwd(cwd, sizeof(cwd))) {
+                printf("%s\n", cwd);
+                exit(0);
+            } else {
+                perror("pwd");
+                exit(1);
+            }
+        }
+
+        if (strcmp(cmd->argv[0], "exit") == 0) {
+            int code = 0;
+            if (cmd->argv[1]) code = atoi(cmd->argv[1]);
+            exit(code);
+        }
+
+        // ---------- External command ----------
+        execvp(cmd->argv[0], cmd->argv);
+        perror(cmd->argv[0]);
+        exit(1);
+    }
+
+    // ---------- PARENT ----------
+    if (pid > 0) {
+        // 1️⃣ Handle "cd" in parent so it persists across commands
+        if (cmd->argv[0] && strcmp(cmd->argv[0], "cd") == 0) {
+            if (cmd->argv[1] && !cmd->argv[2]) {
+                chdir(cmd->argv[1]);  // silently ignore errors in parent
+            }
+        }
+
+        // 2️⃣ Handle "exit" in parent so shell terminates
+        if (cmd->argv[0] && strcmp(cmd->argv[0], "exit") == 0) {
+            int code = 0;
+            if (cmd->argv[1]) code = atoi(cmd->argv[1]);
+            exit(code);
+        }
+
+        // 3️⃣ Close write end of pipe (if any)
+        if (cmd->controlop == CMD_PIPE) {
+            close(pipefd[1]);
+        }
+
+        // 4️⃣ Close previous pipe read end if not STDIN
+        if (*pass_pipefd != STDIN_FILENO) {
+            close(*pass_pipefd);
+        }
+
+        // 5️⃣ Set up next stage of pipeline
+        if (cmd->controlop == CMD_PIPE) {
+            *pass_pipefd = pipefd[0];
+        } else {
+            *pass_pipefd = STDIN_FILENO;
+        }
+    }
+
+    return pid;
 }
+
 
 
 /* cmd_line_exec(cmdlist)
@@ -239,25 +276,45 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
 int
 cmd_line_exec(command_t *cmdlist)
 {
-	int cmd_status = 0;	    // status of last command executed
-	int pipefd = STDIN_FILENO;  // read end of last pipe
+    int cmd_status = 0;           // exit status of last command
+    int pipefd = STDIN_FILENO;    // read end of previous pipe
 
-	while (cmdlist) {
-		int wp_status;	    // Use for waitpid's status argument!
-				    // Read the manual page for waitpid() to
-				    // see how to get the command's exit
-				    // status (cmd_status) from this value.
+    while (cmdlist) {
+        int wp_status;
+        pid_t pid = cmd_exec(cmdlist, &pipefd);
+        if (pid < 0)
+            abort();  // something went wrong inside cmd_exec
 
-		// EXERCISE 4: Fill out this function!
-		// If an error occurs in cmd_exec, feel free to abort().
+        // Decide whether to wait for this process
+        if (cmdlist->controlop != CMD_BACKGROUND &&
+            cmdlist->controlop != CMD_PIPE) {
+            // wait for it to finish
+            waitpid(pid, &wp_status, 0);
+            cmd_status = WIFEXITED(wp_status)
+                ? WEXITSTATUS(wp_status)
+                : 1;
+            } else {
+                // background/piped: don’t wait
+                cmd_status = 0;
+            }
 
-		/* Your code here */
+        // ✅ Handle "exit" in parent so shell terminates
+        if (cmdlist->argv[0] && strcmp(cmdlist->argv[0], "exit") == 0) {
+            exit(cmd_status);
+        }
 
-		cmdlist = cmdlist->next;
-	}
+        // conditional logic for && and ||
+        if (cmdlist->controlop == CMD_AND && cmd_status != 0)
+            break; // stop if failed
+        if (cmdlist->controlop == CMD_OR && cmd_status == 0)
+            break; // stop if succeeded
 
-        while (waitpid(0, 0, WNOHANG) > 0);
+        cmdlist = cmdlist->next;
+    }
 
-done:
-	return cmd_status;
+    // reap any background processes
+    while (waitpid(0, 0, WNOHANG) > 0)
+        ;
+
+    return cmd_status;
 }
