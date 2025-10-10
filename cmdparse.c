@@ -83,10 +83,14 @@ parse_gettoken(parsestate_t *parsestate, token_t *token)
 		if (*str == '\"') {
 			quote_state ^= 1;
 			any_quotes = 1;
+			str++;
+			continue;
 		} else {
 			if (*str == '`') {
 				quote_state ^= 2;
 				any_quotes = 1;
+				str++;
+				continue;
 			}
 			if (i >= TOKENSIZE - 1)
 				// Token too long; this is an error
@@ -207,13 +211,35 @@ cmd_alloc(void)
 void
 cmd_free(command_t *cmd)
 {
-	int i;
+	if (!cmd) return;
 
-	// It's OK to cmd_free(NULL).
-	if (!cmd)
-		return;
+	// free argv[]
+	for (int i = 0; i < MAXTOKENS && cmd->argv[i]; i++) {
+		free(cmd->argv[i]);
+		cmd->argv[i] = NULL;
+	}
 
-	/* Your code here. */
+	// free redirect filenames
+	for (int fd = 0; fd < 3; fd++) {
+		if (cmd->redirect_filename[fd]) {
+			free(cmd->redirect_filename[fd]);
+			cmd->redirect_filename[fd] = NULL;
+		}
+	}
+
+	// free subshell
+	if (cmd->subshell) {
+		cmd_free(cmd->subshell);
+		cmd->subshell = NULL;
+	}
+
+	// free the rest of the pipeline/sequence
+	if (cmd->next) {
+		cmd_free(cmd->next);
+		cmd->next = NULL;
+	}
+
+	free(cmd);
 }
 
 
@@ -307,7 +333,26 @@ cmd_parse(parsestate_t *parsestate)
              //     have been given fit together. (It may be helpful to
              //     look over cmdparse.h again.)
             /* Your code here. */
+			// A subshell cannot mix with other argv tokens.
+			// Examples of invalid inputs:
+			//   "echo (foo)" or "(foo) echo" → syntax error
+			if (i > 0 || cmd->subshell)
+				goto error;
+
+			// Recursively parse everything inside parentheses.
+			// Pass in_parens = 1 so the parser knows to expect a ')'.
+			// A subshell cannot mix with other argv tokens.
+			if (i > 0 || cmd->subshell)
+				goto error;
+
+			// Recursively parse everything inside parentheses.
+			cmd->subshell = cmd_line_parse(parsestate, 1);
+			if (!cmd->subshell)
+				goto error;
+
+			// Don't consume the closing ')'; cmd_line_parse() stops right before it.
 			break;
+
 		default:
 			parse_ungettoken(parsestate);
 			goto done;
@@ -318,7 +363,7 @@ cmd_parse(parsestate_t *parsestate)
 	// NULL-terminate the argv list
 	cmd->argv[i] = 0;
 
-	if (i == 0) {
+	if (i == 0 && !cmd->subshell) {
 		/* Empty command */
 		cmd_free(cmd);
 		return NULL;
@@ -399,9 +444,23 @@ cmd_line_parse(parsestate_t *parsestate, int in_parens)
 		ender:
 		case TOK_END:
 		case TOK_CLOSE_PAREN:
-			if ((token.type == TOK_END) == (in_parens != 0))
+				if (token.type == TOK_CLOSE_PAREN) {
+			if (!in_parens) {
+				// ')' at top level is invalid
 				goto error;
-			goto done;
+			} else {
+				// properly closing a subshell
+				goto done;
+			}
+		}
+				if (token.type == TOK_END) {
+					if (in_parens) {
+						// end-of-line inside parentheses = missing ')'
+						goto error;
+					} else {
+						goto done; // normal end of command line
+					}
+				}
 
 		default:
 			goto error;
