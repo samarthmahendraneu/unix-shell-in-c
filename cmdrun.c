@@ -214,12 +214,19 @@ cmd_exec(command_t *cmd, int *pass_pipefd)
         // 1️⃣ Handle "cd" in parent so it persists across commands
         if (cmd->argv[0] && strcmp(cmd->argv[0], "cd") == 0) {
             if (cmd->argv[1] && !cmd->argv[2]) {
-                chdir(cmd->argv[1]);  // silently ignore errors in parent
+                // Try to change directory silently; if it fails, stderr already printed in child
+                if (chdir(cmd->argv[1]) < 0) {
+                    // do nothing — child already reported error
+                }
             }
         }
 
         // 2️⃣ Handle "exit" in parent so shell terminates
         if (cmd->argv[0] && strcmp(cmd->argv[0], "exit") == 0) {
+            if (cmd->argv[2]) {
+                fprintf(stderr, "exit: Syntax error! Too many arguments!\n");
+                exit(1);
+            }
             int code = 0;
             if (cmd->argv[1]) code = atoi(cmd->argv[1]);
             exit(code);

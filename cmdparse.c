@@ -78,34 +78,32 @@ parse_gettoken(parsestate_t *parsestate, token_t *token)
 
 	quote_state = any_quotes = 0;
 	i = 0;
-	while (*str != '\0'
-	       && (quote_state || !isspace((unsigned char) *str))) {
-		if (*str == '\"') {
-			quote_state ^= 1;
+	while (*str != '\0' && !isspace((unsigned char)*str)) {
+		// Handle single or double quotes properly
+		if (*str == '\'' || *str == '\"') {
+			char quote = *str++;
 			any_quotes = 1;
-			str++;
+			while (*str && *str != quote) {
+				if (i >= TOKENSIZE - 1)
+					goto error;
+				token->buffer[i++] = *str++;
+			}
+			if (*str == quote)
+				str++;  // skip closing quote
 			continue;
-		} else {
-			if (*str == '`') {
-				quote_state ^= 2;
-				any_quotes = 1;
-				str++;
-				continue;
-			}
-			if (i >= TOKENSIZE - 1)
-				// Token too long; this is an error
-				goto error;
-			token->buffer[i++] = *str;
-			if ((*str == '(' || *str == ')' || *str == ';')
-			    && quote_state == 0) {
-				if (i > 1)
-					--i;
-				else
-					str++;
-				break;
-			}
 		}
-		str++;
+
+		// Prevent buffer overflow
+		if (i >= TOKENSIZE - 1)
+			goto error;
+
+		// Handle special delimiters at token start
+		if ((*str == '(' || *str == ')' || *str == ';') && i == 0) {
+			token->buffer[i++] = *str++;
+			break;
+		}
+
+		token->buffer[i++] = *str++;
 	}
 	if (quote_state)
 		// Ended inside quotes; this is an error
@@ -265,6 +263,15 @@ cmd_parse(parsestate_t *parsestate)
 	if (!cmd)
 		return NULL;
 
+	token_t peek;
+	parse_gettoken(parsestate, &peek);
+	if (peek.type == TOK_END) {
+		// nothing to parse
+		return NULL;
+	}
+	parse_ungettoken(parsestate);
+
+
 	while (1) {
 
 		// Read the next token from 'parsestate'.
@@ -340,12 +347,6 @@ cmd_parse(parsestate_t *parsestate)
 				goto error;
 
 			// Recursively parse everything inside parentheses.
-			// Pass in_parens = 1 so the parser knows to expect a ')'.
-			// A subshell cannot mix with other argv tokens.
-			if (i > 0 || cmd->subshell)
-				goto error;
-
-			// Recursively parse everything inside parentheses.
 			cmd->subshell = cmd_line_parse(parsestate, 1);
 			if (!cmd->subshell)
 				goto error;
@@ -406,11 +407,19 @@ cmd_line_parse(parsestate_t *parsestate, int in_parens)
 	// COMMAND &&                          => error (can't end with &&)
 	// COMMAND )                           => error (but OK if "in_parens")
 
+
 	while (1) {
 		// Parse the next command.
 		cmd = cmd_parse(parsestate);
-		if (!cmd)		// Empty commands are errors.
-			goto error;
+		if (!cmd) {
+			if (in_parens) {
+				// Empty inside parentheses → syntax error
+				goto error;
+			} else {
+				// Empty top-level line or whitespace-only → just stop parsing
+				goto done;
+			}
+		}
 
 		if (prev_cmd)
 			prev_cmd->next = cmd;
@@ -443,24 +452,21 @@ cmd_line_parse(parsestate_t *parsestate, int in_parens)
 
 		ender:
 		case TOK_END:
-		case TOK_CLOSE_PAREN:
-				if (token.type == TOK_CLOSE_PAREN) {
-			if (!in_parens) {
-				// ')' at top level is invalid
+			if (in_parens) {
+				// End of input inside parentheses → missing ')'
 				goto error;
 			} else {
-				// properly closing a subshell
 				goto done;
 			}
-		}
-				if (token.type == TOK_END) {
-					if (in_parens) {
-						// end-of-line inside parentheses = missing ')'
-						goto error;
-					} else {
-						goto done; // normal end of command line
-					}
-				}
+
+		case TOK_CLOSE_PAREN:
+			if (in_parens) {
+				// Properly close subshell
+				goto done;
+			} else {
+				// Extra ')' at top level
+				goto error;
+			}
 
 		default:
 			goto error;
